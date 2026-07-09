@@ -57,7 +57,9 @@ static void mqtt_event_handler(void *handler_args,
         printf("topic: %.*s\n", event->topic_len, event->topic);
 
         if (topic_match(event, MQTT_OTA_TOPIC)) {
-            ota_mqtt_handle_packet((const uint8_t *)event->data, event->data_len);
+            if (!ota_mqtt_submit_packet((const uint8_t *)event->data, event->data_len)) {
+                ESP_LOGE(TAG, "submit OTA packet failed");
+            }
         } else {
             printf("data : %.*s\n", event->data_len, event->data);
         }

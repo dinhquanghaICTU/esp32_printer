@@ -82,6 +82,10 @@ int uart_receive_timeout(uint8_t *buffer, size_t length, uint32_t timeout_ms)
                            pdMS_TO_TICKS(timeout_ms));
 }
 
+void uart_flush_rx(void)
+{
+    uart_flush_input(ESP_UART_PORT);
+}
 
 
 

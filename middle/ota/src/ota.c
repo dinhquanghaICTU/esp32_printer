@@ -1,12 +1,19 @@
 #include "ota.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "esp_log.h"
 #include "uart.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/queue.h"
+#include "freertos/task.h"
 
-#define STM_OTA_TIMEOUT_MS      2000
+#define STM_OTA_TIMEOUT_MS      20000
+#define OTA_QUEUE_DEPTH         96
+#define OTA_TASK_STACK_SIZE     4096
+#define OTA_TASK_PRIORITY       5
 
 #define STM_OTA_MAGIC           0xA55A
 #define STM_OTA_TYPE_BEGIN      0x01
@@ -25,6 +32,13 @@ static uint32_t s_ota_total_size = 0;
 static uint32_t s_ota_sent_size = 0;
 static uint32_t s_mqtt_expected_seq = 0;
 static bool s_ota_running = false;
+static QueueHandle_t s_ota_queue = NULL;
+static TaskHandle_t s_ota_task = NULL;
+
+typedef struct {
+    int len;
+    uint8_t data[];
+} ota_mqtt_msg_t;
 
 typedef struct __attribute__((packed)) {
     uint16_t magic;
@@ -106,25 +120,56 @@ static void ota_print_progress(void)
 
 static bool stm32_wait_ack(uint32_t expect_seq, uint32_t timeout_ms)
 {
-    char rx[64] = {0};
+    char rx[128] = {0};
+    size_t used = 0;
+    TickType_t start_tick = xTaskGetTickCount();
+    TickType_t timeout_tick = pdMS_TO_TICKS(timeout_ms);
 
-    int len = uart_receive_timeout((uint8_t *)rx, sizeof(rx) - 1, timeout_ms);
-    if (len <= 0) {
-        ESP_LOGE(TAG, "ACK timeout seq=%lu", (unsigned long)expect_seq);
-        return false;
+    char ok_ack[32];
+    char err_ack[32];
+    snprintf(ok_ack, sizeof(ok_ack), "OK:%lu", (unsigned long)expect_seq);
+    snprintf(err_ack, sizeof(err_ack), "ERR:%lu", (unsigned long)expect_seq);
+
+    while ((xTaskGetTickCount() - start_tick) < timeout_tick) {
+        uint8_t tmp[32];
+        int len = uart_receive_timeout(tmp, sizeof(tmp), 100);
+
+        if (len <= 0) {
+            continue;
+        }
+
+        for (int i = 0; i < len; i++) {
+            char c = (char)tmp[i];
+
+            if (c == '\0') {
+                continue;
+            }
+
+            if (used >= sizeof(rx) - 1) {
+                memmove(rx, rx + 32, used - 32);
+                used -= 32;
+            }
+
+            rx[used++] = c;
+            rx[used] = '\0';
+        }
+
+        if (strstr(rx, ok_ack) != NULL) {
+            ESP_LOGI(TAG, "ACK %lu", (unsigned long)expect_seq);
+            return true;
+        }
+
+        if (strstr(rx, err_ack) != NULL || strstr(rx, "ERR:") != NULL) {
+            ESP_LOGE(TAG, "STM32 returned error while waiting seq=%lu rx='%s'",
+                     (unsigned long)expect_seq,
+                     rx);
+            return false;
+        }
     }
 
-    rx[len] = '\0';
-
-    char expect[32];
-    snprintf(expect, sizeof(expect), "OK:%lu", (unsigned long)expect_seq);
-
-    if (strstr(rx, expect) != NULL) {
-        ESP_LOGI(TAG, "ACK %lu", (unsigned long)expect_seq);
-        return true;
-    }
-
-    ESP_LOGE(TAG, "bad ACK: %s", rx);
+    ESP_LOGE(TAG, "ACK timeout seq=%lu rx='%s'",
+             (unsigned long)expect_seq,
+             rx);
     return false;
 }
 
@@ -141,6 +186,7 @@ static bool stm32_send_packet(uint8_t type,
         .crc16 = ota_crc16(payload, len),
     };
 
+    uart_flush_rx();
     uart_send_bytes((const uint8_t *)&header, sizeof(header));
 
     if (payload != NULL && len > 0) {
@@ -148,6 +194,74 @@ static bool stm32_send_packet(uint8_t type,
     }
 
     return stm32_wait_ack(seq, STM_OTA_TIMEOUT_MS);
+}
+
+static void ota_task(void *arg)
+{
+    ota_mqtt_msg_t *msg = NULL;
+
+    while (1) {
+        if (xQueueReceive(s_ota_queue, &msg, portMAX_DELAY) == pdTRUE) {
+            if (msg != NULL) {
+                ota_mqtt_handle_packet(msg->data, msg->len);
+                free(msg);
+            }
+        }
+    }
+}
+
+void ota_init(void)
+{
+    if (s_ota_queue == NULL) {
+        s_ota_queue = xQueueCreate(OTA_QUEUE_DEPTH, sizeof(ota_mqtt_msg_t *));
+        if (s_ota_queue == NULL) {
+            ESP_LOGE(TAG, "create OTA queue failed");
+            return;
+        }
+    }
+
+    if (s_ota_task == NULL) {
+        BaseType_t ret = xTaskCreate(ota_task,
+                                     "ota_task",
+                                     OTA_TASK_STACK_SIZE,
+                                     NULL,
+                                     OTA_TASK_PRIORITY,
+                                     &s_ota_task);
+        if (ret != pdPASS) {
+            ESP_LOGE(TAG, "create OTA task failed");
+            s_ota_task = NULL;
+        }
+    }
+}
+
+bool ota_mqtt_submit_packet(const uint8_t *data, int len)
+{
+    if (data == NULL || len <= 0) {
+        return false;
+    }
+
+    ota_init();
+
+    if (s_ota_queue == NULL) {
+        return false;
+    }
+
+    ota_mqtt_msg_t *msg = malloc(sizeof(ota_mqtt_msg_t) + len);
+    if (msg == NULL) {
+        ESP_LOGE(TAG, "alloc OTA msg failed len=%d", len);
+        return false;
+    }
+
+    msg->len = len;
+    memcpy(msg->data, data, len);
+
+    if (xQueueSend(s_ota_queue, &msg, 0) != pdTRUE) {
+        ESP_LOGE(TAG, "OTA queue full, drop packet len=%d", len);
+        free(msg);
+        return false;
+    }
+
+    return true;
 }
 
 bool ota_stm32_begin(uint32_t firmware_size, uint32_t firmware_crc32)
