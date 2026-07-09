@@ -8,6 +8,7 @@ idf_component_register(
         "../middle/wifi/src/wifi.c"
         "../middle/led/src/led.c"
         "../middle/mqtt/src/mqtt.c"
+        "../middle/ota/src/ota.c"
         "../app/src/app.c"
 
     INCLUDE_DIRS
@@ -19,6 +20,7 @@ idf_component_register(
         "../middle/wifi/inc"
         "../middle/led/inc"
         "../middle/mqtt/inc"
+        "../middle/ota/inc"
         "../app/inc"
 
     PRIV_REQUIRES

@@ -38,7 +38,7 @@ static void mqtt_event_handler(void *handler_args,
 
     case MQTT_EVENT_SUBSCRIBED:
         
-        ESP_LOGI(TAG, "subscribed %s msg_id=%d",TOPIC,event->msg_id);
+        ESP_LOGI(TAG, "subscribed %s msg_id=%d",TOPIC ,event->msg_id);
         break;
 
     case MQTT_EVENT_PUBLISHED:
@@ -51,16 +51,11 @@ static void mqtt_event_handler(void *handler_args,
         printf("data : %.*s\n", event->data_len, event->data);
 
     
-        // if (strncmp(event->topic, "printer/cmd", event->topic_len) == 0) {
-        //     printf("check datta \r\n");
-            
-            
-        //     // if (strncmp(event->data, "LED_ON", event->data_len) == 0) {
-        //     //     led_on();
-        //     // } else if (strncmp(event->data, "LED_OFF", event->data_len) == 0) {
-        //     //     led_off();
-        //     // }
-        // }
+        if (strncmp(event->topic, "printer/cmd", event->topic_len) == 0) {
+            if (strncmp(event->data, "OTA", event->data_len) == 0) {
+                
+            } 
+        }
         break;
 
     case MQTT_EVENT_ERROR:
