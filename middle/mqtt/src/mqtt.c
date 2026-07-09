@@ -1,20 +1,27 @@
 #include "mqtt.h"
 #include "config.h"
 #include "led.h"
+#include "ota.h"
 
+#include <stdbool.h>
 #include <stdio.h>
 #include <string.h>
 
 #include "esp_log.h"
 #include "mqtt_client.h"
 
-
-
+#define MQTT_OTA_TOPIC "printer/ota"
 
 static const char *TAG = "mqtt";
 
 static esp_mqtt_client_handle_t s_mqtt_client = NULL;
 static bool s_mqtt_connected = false;
+
+static bool topic_match(esp_mqtt_event_handle_t event, const char *topic)
+{
+    return event->topic_len == strlen(topic) &&
+           strncmp(event->topic, topic, event->topic_len) == 0;
+}
 
 static void mqtt_event_handler(void *handler_args,
                                esp_event_base_t base,
@@ -28,7 +35,8 @@ static void mqtt_event_handler(void *handler_args,
         ESP_LOGI(TAG, "connected");
         s_mqtt_connected = true;
 
-        esp_mqtt_client_subscribe(s_mqtt_client,TOPIC, 1);
+        esp_mqtt_client_subscribe(s_mqtt_client, TOPIC, 1);
+        esp_mqtt_client_subscribe(s_mqtt_client, MQTT_OTA_TOPIC, 1);
         break;
 
     case MQTT_EVENT_DISCONNECTED:
@@ -37,8 +45,7 @@ static void mqtt_event_handler(void *handler_args,
         break;
 
     case MQTT_EVENT_SUBSCRIBED:
-        
-        ESP_LOGI(TAG, "subscribed %s msg_id=%d",TOPIC ,event->msg_id);
+        ESP_LOGI(TAG, "subscribed msg_id=%d", event->msg_id);
         break;
 
     case MQTT_EVENT_PUBLISHED:
@@ -48,13 +55,11 @@ static void mqtt_event_handler(void *handler_args,
     case MQTT_EVENT_DATA:
         ESP_LOGI(TAG, "data received");
         printf("topic: %.*s\n", event->topic_len, event->topic);
-        printf("data : %.*s\n", event->data_len, event->data);
 
-    
-        if (strncmp(event->topic, "printer/cmd", event->topic_len) == 0) {
-            if (strncmp(event->data, "OTA", event->data_len) == 0) {
-                
-            } 
+        if (topic_match(event, MQTT_OTA_TOPIC)) {
+            ota_mqtt_handle_packet((const uint8_t *)event->data, event->data_len);
+        } else {
+            printf("data : %.*s\n", event->data_len, event->data);
         }
         break;
 
@@ -69,14 +74,17 @@ static void mqtt_event_handler(void *handler_args,
 
 void mqtt_app_init(const char *url_broker)
 {
+    printf("check broker %s\r\n", url_broker);
 
-    printf ("check broker %s\r\n", url_broker);
     if (s_mqtt_client != NULL) {
         return;
     }
 
     esp_mqtt_client_config_t mqtt_cfg = {
         .broker.address.uri = url_broker,
+        .session.keepalive = 60,
+        .network.timeout_ms = 10000,
+        .network.reconnect_timeout_ms = 5000,
     };
 
     s_mqtt_client = esp_mqtt_client_init(&mqtt_cfg);

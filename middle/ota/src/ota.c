@@ -14,9 +14,17 @@
 #define STM_OTA_TYPE_END        0x03
 #define STM_OTA_TYPE_ABORT      0x04
 
+#define MQTT_OTA_BEGIN          0x01
+#define MQTT_OTA_DATA           0x02
+#define MQTT_OTA_END            0x03
+
 static const char *TAG = "ota";
 
 static uint32_t s_seq = 0;
+static uint32_t s_ota_total_size = 0;
+static uint32_t s_ota_sent_size = 0;
+static uint32_t s_mqtt_expected_seq = 0;
+static bool s_ota_running = false;
 
 typedef struct __attribute__((packed)) {
     uint16_t magic;
@@ -25,6 +33,13 @@ typedef struct __attribute__((packed)) {
     uint16_t len;
     uint16_t crc16;
 } ota_packet_header_t;
+
+typedef struct __attribute__((packed)) {
+    uint8_t type;
+    uint32_t seq;
+    uint32_t size;
+    uint32_t crc32;
+} ota_mqtt_header_t;
 
 static uint16_t ota_crc16(const uint8_t *data, uint16_t len)
 {
@@ -47,6 +62,46 @@ static uint16_t ota_crc16(const uint8_t *data, uint16_t len)
     }
 
     return crc;
+}
+
+static uint32_t ota_crc32(const uint8_t *data, uint32_t len)
+{
+    uint32_t crc = 0xFFFFFFFF;
+
+    if (data == NULL || len == 0) {
+        return 0;
+    }
+
+    for (uint32_t i = 0; i < len; i++) {
+        crc ^= data[i];
+
+        for (uint8_t bit = 0; bit < 8; bit++) {
+            if ((crc & 1) != 0) {
+                crc = (crc >> 1) ^ 0xEDB88320;
+            } else {
+                crc >>= 1;
+            }
+        }
+    }
+
+    return ~crc;
+}
+
+static void ota_print_progress(void)
+{
+    uint32_t percent = 0;
+
+    if (s_ota_total_size > 0) {
+        percent = (s_ota_sent_size * 100U) / s_ota_total_size;
+        if (percent > 100U) {
+            percent = 100U;
+        }
+    }
+
+    ESP_LOGI(TAG, "STM32 OTA progress: %lu/%lu bytes (%lu%%)",
+             (unsigned long)s_ota_sent_size,
+             (unsigned long)s_ota_total_size,
+             (unsigned long)percent);
 }
 
 static bool stm32_wait_ack(uint32_t expect_seq, uint32_t timeout_ms)
@@ -143,4 +198,105 @@ void ota_stm32_abort(void)
 
     ESP_LOGW(TAG, "OTA abort");
     uart_send_bytes((const uint8_t *)&header, sizeof(header));
+}
+
+void ota_mqtt_handle_packet(const uint8_t *data, int len)
+{
+    if (data == NULL || len < (int)sizeof(ota_mqtt_header_t)) {
+        ESP_LOGE(TAG, "MQTT OTA packet too short len=%d", len);
+        return;
+    }
+
+    const ota_mqtt_header_t *hdr = (const ota_mqtt_header_t *)data;
+    const uint8_t *payload = data + sizeof(ota_mqtt_header_t);
+    int payload_len = len - (int)sizeof(ota_mqtt_header_t);
+
+    switch (hdr->type) {
+    case MQTT_OTA_BEGIN:
+        ESP_LOGI(TAG, "MQTT OTA BEGIN seq=%lu size=%lu crc32=0x%08lx",
+                 (unsigned long)hdr->seq,
+                 (unsigned long)hdr->size,
+                 (unsigned long)hdr->crc32);
+
+        s_ota_total_size = hdr->size;
+        s_ota_sent_size = 0;
+        s_mqtt_expected_seq = hdr->seq + 1;
+        s_ota_running = ota_stm32_begin(hdr->size, hdr->crc32);
+
+        if (!s_ota_running) {
+            ESP_LOGE(TAG, "STM32 OTA begin failed");
+        }
+        break;
+
+    case MQTT_OTA_DATA:
+        if (!s_ota_running) {
+            ESP_LOGW(TAG, "ignore OTA DATA because OTA is not running");
+            return;
+        }
+
+        if (hdr->seq != s_mqtt_expected_seq) {
+            ESP_LOGW(TAG, "OTA sequence mismatch expected=%lu got=%lu",
+                     (unsigned long)s_mqtt_expected_seq,
+                     (unsigned long)hdr->seq);
+            s_mqtt_expected_seq = hdr->seq;
+        }
+
+        if (hdr->size != (uint32_t)payload_len) {
+            ESP_LOGE(TAG, "OTA chunk length mismatch header=%lu payload=%d",
+                     (unsigned long)hdr->size,
+                     payload_len);
+            ota_stm32_abort();
+            s_ota_running = false;
+            return;
+        }
+
+        if (ota_crc32(payload, payload_len) != hdr->crc32) {
+            ESP_LOGE(TAG, "OTA chunk crc32 mismatch seq=%lu", (unsigned long)hdr->seq);
+            ota_stm32_abort();
+            s_ota_running = false;
+            return;
+        }
+
+        if (!ota_stm32_send_chunk(payload, (uint16_t)payload_len)) {
+            ESP_LOGE(TAG, "send OTA chunk to STM32 failed seq=%lu", (unsigned long)hdr->seq);
+            ota_stm32_abort();
+            s_ota_running = false;
+            return;
+        }
+
+        s_ota_sent_size += payload_len;
+        s_mqtt_expected_seq = hdr->seq + 1;
+        ota_print_progress();
+        break;
+
+    case MQTT_OTA_END:
+        ESP_LOGI(TAG, "MQTT OTA END seq=%lu", (unsigned long)hdr->seq);
+
+        if (!s_ota_running) {
+            ESP_LOGW(TAG, "ignore OTA END because OTA is not running");
+            return;
+        }
+
+        if (s_ota_sent_size != s_ota_total_size) {
+            ESP_LOGE(TAG, "OTA size mismatch sent=%lu total=%lu",
+                     (unsigned long)s_ota_sent_size,
+                     (unsigned long)s_ota_total_size);
+            ota_stm32_abort();
+            s_ota_running = false;
+            return;
+        }
+
+        if (ota_stm32_end()) {
+            ESP_LOGI(TAG, "STM32 OTA done 100%%");
+        } else {
+            ESP_LOGE(TAG, "STM32 OTA end failed");
+        }
+
+        s_ota_running = false;
+        break;
+
+    default:
+        ESP_LOGW(TAG, "unknown MQTT OTA packet type=%u", hdr->type);
+        break;
+    }
 }

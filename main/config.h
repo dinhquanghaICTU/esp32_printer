@@ -4,7 +4,7 @@
 
 #include "stdint.h"
 
-#define URL_BROKER  "mqtt://192.168.1.244"
+#define URL_BROKER  "mqtt://192.168.1.175"
 #define TOPIC "test/topic"
 
 extern uint8_t ssid_value[32];
