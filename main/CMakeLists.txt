@@ -1,0 +1,31 @@
+idf_component_register(
+    SRCS
+        "esp32_printer.c"
+        "../middle/button/src/button.c"
+        "../middle/uart/src/uart.c"
+        "../middle/ble/src/ble.c"
+        "../middle/internal_flash/src/internal_flash.c"
+        "../middle/wifi/src/wifi.c"
+        "../middle/led/src/led.c"
+        "../app/src/app.c"
+
+
+    INCLUDE_DIRS
+        "."
+        "../middle/button/inc"
+        "../middle/uart/inc"
+        "../middle/ble/inc"
+        "../middle/internal_flash/inc"
+        "../middle/wifi/inc"
+        "../middle/led/inc"
+        "../app/inc"
+        
+    PRIV_REQUIRES
+        esp_driver_gpio
+        esp_driver_uart
+        bt
+        nvs_flash
+        esp_wifi
+        esp_event
+        esp_netif
+)
