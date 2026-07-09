@@ -7,8 +7,8 @@ idf_component_register(
         "../middle/internal_flash/src/internal_flash.c"
         "../middle/wifi/src/wifi.c"
         "../middle/led/src/led.c"
+        "../middle/mqtt/src/mqtt.c"
         "../app/src/app.c"
-
 
     INCLUDE_DIRS
         "."
@@ -18,8 +18,9 @@ idf_component_register(
         "../middle/internal_flash/inc"
         "../middle/wifi/inc"
         "../middle/led/inc"
+        "../middle/mqtt/inc"
         "../app/inc"
-        
+
     PRIV_REQUIRES
         esp_driver_gpio
         esp_driver_uart
@@ -28,4 +29,5 @@ idf_component_register(
         esp_wifi
         esp_event
         esp_netif
+        mqtt
 )

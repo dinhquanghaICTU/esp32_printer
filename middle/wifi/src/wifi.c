@@ -14,6 +14,8 @@ static bool s_wifi_started = false;
 
 static bool s_wifi_retry = false;
 
+static bool s_have_ip = false;
+
 static void wifi_event_handler(void *arg,
                                esp_event_base_t event_base,
                                int32_t event_id,
@@ -48,6 +50,8 @@ static void wifi_event_handler(void *arg,
 
     if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
         ip_event_got_ip_t *event = (ip_event_got_ip_t *)event_data;
+
+        s_have_ip = true;
         ESP_LOGI(TAG, "got ip: " IPSTR, IP2STR(&event->ip_info.ip));
         return;
     }
@@ -118,12 +122,20 @@ void wifi_stop_sta(void)
     s_wifi_started = false;
 }
 
-
+/*======================================API============================*/
 bool get_wifi_retry (void){
 
     return s_wifi_retry;
 }
+
 void clear_wifi_retry(void)
 {
     s_wifi_retry = false;
+}
+
+bool get_ip(void){
+    return s_have_ip;
+}
+void clear_get_ip (void){
+    s_have_ip = false;
 }

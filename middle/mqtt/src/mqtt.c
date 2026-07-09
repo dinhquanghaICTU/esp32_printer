@@ -1,0 +1,120 @@
+#include "mqtt.h"
+#include "config.h"
+#include "led.h"
+
+#include <stdio.h>
+#include <string.h>
+
+#include "esp_log.h"
+#include "mqtt_client.h"
+
+
+
+
+static const char *TAG = "mqtt";
+
+static esp_mqtt_client_handle_t s_mqtt_client = NULL;
+static bool s_mqtt_connected = false;
+
+static void mqtt_event_handler(void *handler_args,
+                               esp_event_base_t base,
+                               int32_t event_id,
+                               void *event_data)
+{
+    esp_mqtt_event_handle_t event = (esp_mqtt_event_handle_t)event_data;
+
+    switch (event_id) {
+    case MQTT_EVENT_CONNECTED:
+        ESP_LOGI(TAG, "connected");
+        s_mqtt_connected = true;
+
+        esp_mqtt_client_subscribe(s_mqtt_client,TOPIC, 1);
+        break;
+
+    case MQTT_EVENT_DISCONNECTED:
+        ESP_LOGW(TAG, "disconnected");
+        s_mqtt_connected = false;
+        break;
+
+    case MQTT_EVENT_SUBSCRIBED:
+        
+        ESP_LOGI(TAG, "subscribed %s msg_id=%d",TOPIC,event->msg_id);
+        break;
+
+    case MQTT_EVENT_PUBLISHED:
+        ESP_LOGI(TAG, "published msg_id=%d", event->msg_id);
+        break;
+
+    case MQTT_EVENT_DATA:
+        ESP_LOGI(TAG, "data received");
+        printf("topic: %.*s\n", event->topic_len, event->topic);
+        printf("data : %.*s\n", event->data_len, event->data);
+
+    
+        // if (strncmp(event->topic, "printer/cmd", event->topic_len) == 0) {
+        //     printf("check datta \r\n");
+            
+            
+        //     // if (strncmp(event->data, "LED_ON", event->data_len) == 0) {
+        //     //     led_on();
+        //     // } else if (strncmp(event->data, "LED_OFF", event->data_len) == 0) {
+        //     //     led_off();
+        //     // }
+        // }
+        break;
+
+    case MQTT_EVENT_ERROR:
+        ESP_LOGE(TAG, "error");
+        break;
+
+    default:
+        break;
+    }
+}
+
+void mqtt_app_init(const char *url_broker)
+{
+
+    printf ("check broker %s\r\n", url_broker);
+    if (s_mqtt_client != NULL) {
+        return;
+    }
+
+    esp_mqtt_client_config_t mqtt_cfg = {
+        .broker.address.uri = url_broker,
+    };
+
+    s_mqtt_client = esp_mqtt_client_init(&mqtt_cfg);
+
+    esp_mqtt_client_register_event(s_mqtt_client,
+                                   ESP_EVENT_ANY_ID,
+                                   mqtt_event_handler,
+                                   NULL);
+
+    esp_mqtt_client_start(s_mqtt_client);
+}
+
+void mqtt_app_publish(const char *topic, const char *data)
+{
+    if (s_mqtt_client == NULL || !s_mqtt_connected) {
+        ESP_LOGW(TAG, "mqtt not connected");
+        return;
+    }
+
+    esp_mqtt_client_publish(s_mqtt_client,
+                            topic,
+                            data,
+                            0,
+                            1,
+                            0);
+}
+
+void mqtt_app_subscribe(const char *topic)
+{
+    if (s_mqtt_client == NULL || !s_mqtt_connected) {
+        ESP_LOGW(TAG, "mqtt not connected");
+        return;
+    }
+
+    esp_mqtt_client_subscribe(s_mqtt_client, topic, 1);
+}

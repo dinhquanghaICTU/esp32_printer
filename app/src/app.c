@@ -8,6 +8,7 @@
 #include "wifi.h"
 #include "app.h"
 #include "led.h"
+#include "mqtt.h"
 
 #define APP_TASK_STACK_SIZE      4096
 #define BUTTON_TASK_STACK_SIZE   2048
@@ -22,6 +23,8 @@ app_context_t app_ctx;
 static int wifi_started = 0;
 static int ble_inited = 0;
 static int ble_advertising = 0;
+
+static int mqtt_started = 0;
 
 static void app_enter_ble_config(void)
 {
@@ -61,7 +64,7 @@ static void app_task(void *arg)
 static void led_task(void *arg)
 {
     while (1) {
-        printf("ble_inited %d ble_advertising %d \r\n", ble_inited, ble_advertising);
+        // printf("ble_inited %d ble_advertising %d \r\n", ble_inited, ble_advertising);
         if((ble_inited == 1) && (ble_advertising == 1)){
             led_blink();
         }
@@ -166,8 +169,22 @@ void app_process_state(void)
             }
             app_ctx.state = APP_STATE_BLE_CONFIG;
         }
+        // printf("connect mqtt \r\n");
+        app_ctx.state = APP_STATE_MQTT_CONNECTING;
         break;
 
+    case APP_STATE_MQTT_CONNECTING:
+            if(get_ip()){
+                clear_get_ip();
+                printf("check mqtt\r\n");
+                mqtt_app_init(URL_BROKER);
+                app_ctx.state = APP_STATE_MQTT_CONNECTED;
+            }
+        break;
+
+    case APP_STATE_MQTT_CONNECTED:
+        // mqtt_app_subscribe(TOPIC);
+        break;
     default:
         break;
     }

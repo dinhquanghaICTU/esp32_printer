@@ -33,6 +33,6 @@ void led_blink (void){
     led_on();
     vTaskDelay(500 / portTICK_PERIOD_MS);
     led_off();
-    printf("debug\r\n");
+    // printf("debug\r\n");
 }
 
